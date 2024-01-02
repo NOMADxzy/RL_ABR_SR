@@ -6,13 +6,9 @@ from tqdm import tqdm
 import torch
 import torch.optim as optim
 import logging, argparse
-from train_ppo_gae import train_ppo
-from train_ac import train_ac
-from train_a2c import train_a2c
 from train_maml import train_maml_ppo
 
 # from model_ppo_torch import Actor, Critic
-from test_ppo_torch import valid, test
 import variant_vmaf.config.args_maml as args_maml
 
 # import env as Env
@@ -26,7 +22,7 @@ parser = argparse.ArgumentParser(description="RL-based ABR")
 parser.add_argument("--test", action="store_true", help="Evaluate only")
 parser.add_argument("--a2c", action="store_true", help="Train policy with A2C")
 parser.add_argument("--ppo", action="store_true", help="Train policy with PPO")
-parser.add_argument("--maml", action="store_true", help="Train policy with MAML")
+parser.add_argument("--maml", default=True, action="store_true", help="Train policy with MAML")
 parser.add_argument("--lin", action="store_true", help="Using Linear metric")
 
 USE_CUDA = torch.cuda.is_available()
@@ -45,19 +41,11 @@ def main():
         args_others.lin = True
     else:
         args_others.lin = False
-    if args.test:
-        test(TEST_MODEL, TEST_TRACES, LOG_FILE)
-    else:
-        if torch.cuda.is_available():
-            torch.cuda.set_device(0)  # ID of GPU to be used
-            print("CUDA Device: %d" % torch.cuda.current_device())
-
-        if args.a2c:
-            train_a2c()
-        elif args.ppo:
-            train_ppo()
-        elif args.maml:
-            train_maml_ppo(args_others)
+    if torch.cuda.is_available():
+        torch.cuda.set_device(0)  # ID of GPU to be used
+        print("CUDA Device: %d" % torch.cuda.current_device())
+    elif args.maml:
+        train_maml_ppo(args_others)
 
 
 if __name__ == "__main__":

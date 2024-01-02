@@ -33,6 +33,9 @@ USE_CUDA = torch.cuda.is_available()
 dtype = torch.cuda.FloatTensor if torch.cuda.is_available() else torch.FloatTensor
 dlongtype = torch.cuda.LongTensor if torch.cuda.is_available() else torch.LongTensor
 
+ABR_STATE_DIM = 6
+PLACE_STATE_DIM = 3
+
 
 def train_maml_ppo(args):
     add_str = "maml"
@@ -46,11 +49,13 @@ def train_maml_ppo(args):
     check_folder(log_file_path)
     log_file_name = log_file_path + "/log"
     writer = SummaryWriter(log_file_path)
-    mean_value = 0
+    abr_mean_value = 0
+    place_mean_value = 0
 
     # define the parameters of ABR environments
     # _, _, _, _, bitrate_versions, _, _, _, _ = train_env.get_env_info()
     br_dim = 6
+    place_dim = 2
     all_cooked_time, all_cooked_bw, all_file_names = load_trace.load_trace()
     train_env = env.Environment(
         all_cooked_time=all_cooked_time,
@@ -64,7 +69,9 @@ def train_maml_ppo(args):
     with open(log_file_name + "_record", "w") as log_file, open(
         log_file_name + "_test", "w"
     ) as test_log_file:
-        agent = MAMLPPO(args, br_dim)
+        abr_update,place_update = True,True
+        agent = MAMLPPO(args, br_dim, ABR_STATE_DIM, place_dim, PLACE_STATE_DIM)
+        agent.load(abr_epoch=18420)
         if args.init:
             init_ckpt_path = os.path.join(
                 *[summary_dir, "init_ckpt"]
@@ -84,50 +91,73 @@ def train_maml_ppo(args):
             # ---------- limit the file size -----------
             vp_env.clean_file_cache(log_file_name + "_record")
 
-            iteration_replays = []
-            iteration_policies = []
+            abr_iteration_replays = []
+            abr_iteration_policies = []
+            place_iteration_replays = []
+            place_iteration_policies = []
 
             for _ in range(task_num):
-                clone = deepcopy(agent.actor)
+                cloned_abr_actor = deepcopy(agent.abr_actor)
+                cloned_place_actor = deepcopy(agent.place_actor)
                 vp_env.env.set_task(_)
-                task_replay = []
+                abr_task_replay = []
+                place_task_replay = []
 
                 # Fast Adapt
-                for _ in range(args.adapt_steps):
-                    train_episodes = agent.collect_steps(
-                        clone, vp_env, n_episodes=steps_in_episode
+                for _ in range(args.adapt_steps): # 4*47*6*8 train_episodes 47个chunk、6 + 2个特征、8个历史长度
+                    abr_train_episodes, place_train_episodes = agent.collect_steps(
+                        cloned_abr_actor, cloned_place_actor, vp_env, n_episodes=steps_in_episode
+                    ) # abr_train_episodes : [abr_states, abr_actions, abr_returns, abr_advantages]
+                    _, _, cloned_abr_actor = agent.fast_adapt(
+                        cloned_abr_actor, abr_train_episodes, first_order=True
                     )
-                    _, _, clone = agent.fast_adapt(
-                        clone, train_episodes, first_order=True
+                    _, _, cloned_place_actor = agent.fast_adapt(
+                        cloned_place_actor, place_train_episodes, first_order=True
                     )
-                    task_replay.append(train_episodes)
+                    abr_task_replay.append(abr_train_episodes)
+                    place_task_replay.append(place_train_episodes)
 
                 # Compute Validation Loss
-                valid_episodes = agent.collect_steps(
-                    clone, vp_env, n_episodes=steps_in_episode
+                abr_valid_episodes, place_valid_episodes = agent.collect_steps(
+                    cloned_abr_actor, cloned_place_actor, vp_env, n_episodes=steps_in_episode
                 )
-                task_replay.append(valid_episodes)
-                iteration_replays.append(task_replay)
-                iteration_policies.append(clone)
+
+                abr_task_replay.append(abr_valid_episodes)
+                place_task_replay.append(place_valid_episodes)
+
+                abr_iteration_replays.append(abr_task_replay)
+                abr_iteration_policies.append(cloned_abr_actor)
+                place_iteration_replays.append(place_task_replay)
+                place_iteration_policies.append(cloned_place_actor)
 
             # training the models
-            policy_loss_, entropy_loss_ = agent.meta_optimize(
-                iteration_replays, iteration_policies
-            )
+            if abr_update:
+                abr_policy_loss_, abr_entropy_loss_ = agent.meta_optimize(
+                    abr_iteration_replays, abr_iteration_policies, agent.abr_actor
+                )
+                writer.add_scalar("Avg_Abr_Policy_loss", abr_policy_loss_, epoch)
+                writer.add_scalar("Avg_Abr_Entropy_loss", abr_entropy_loss_, epoch)
+            if place_update:
+                place_policy_loss_, place_entropy_loss_ = agent.meta_optimize(
+                    place_iteration_replays, place_iteration_policies, agent.place_actor
+                )
+                writer.add_scalar("Avg_Place_Policy_loss", place_policy_loss_, epoch)
+                writer.add_scalar("Avg_Place_Entropy_loss", place_entropy_loss_, epoch)
 
-            writer.add_scalar("Avg_Policy_loss", policy_loss_, epoch)
-            writer.add_scalar("Avg_Entropy_loss", entropy_loss_, epoch)
 
-            if epoch % int(args.valid_i) == 0 and epoch > 0:
-                model_actor = agent.actor
-                mean_value = valid(
-                    args, model_actor, epoch, test_log_file, log_file_path
+
+            if epoch % 20 == 0 and epoch > 0:
+                abr_model = agent.abr_actor
+                place_model = agent.place_actor
+                abr_mean_value, place_mean_value = valid(
+                    args, abr_model, place_model, epoch, test_log_file, log_file_path
                 )
 
                 save_folder = os.path.join(*[log_file_path, "checkpoints"])
                 check_folder(save_folder)
                 agent.save(save_folder, epoch)
-            writer.add_scalar("Avg_Return", mean_value, epoch)
+            writer.add_scalar("Avg_Abr_Return", abr_mean_value, epoch)
+            writer.add_scalar("Avg_Place_Return", place_mean_value, epoch)
             writer.flush()
 
             if epoch % int(100) == 0 and epoch > 0:

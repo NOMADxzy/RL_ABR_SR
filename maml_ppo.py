@@ -14,18 +14,20 @@ import logging
 import learn2learn as l2l
 from torch import autograd
 from variant_vmaf.utils.replay_memory import ReplayMemory
-from model_ac_torch import Actor, Critic
+from model_ac_torch import Actor, Critic, PlaceActor, PlaceCritic
 
 USE_CUDA = torch.cuda.is_available()
 dtype = torch.cuda.FloatTensor if torch.cuda.is_available() else torch.FloatTensor
 dlongtype = torch.cuda.LongTensor if torch.cuda.is_available() else torch.LongTensor
-
 
 class MAMLPPO:
     def __init__(
         self,
         args,
         a_dim,
+        a_state_dim,
+        p_dim,
+        p_state_dim,
         seed=42,
         device=None,
         name="MAMLPPO",
@@ -36,6 +38,9 @@ class MAMLPPO:
         torch.manual_seed(seed)
 
         self.a_dim = a_dim
+        self.p_dim = p_dim
+        self.a_state_dim = a_state_dim
+        self.p_state_dim = p_state_dim
 
         self.gamma = args.gae_gamma
         self.tau = args.gae_lambda
@@ -49,20 +54,30 @@ class MAMLPPO:
         self.dual_adv_w = args.dual_adv_w
 
         # ---- initialize models ----
-        self.actor = Actor(a_dim).type(dtype)
-        self.critic = Critic(a_dim).type(dtype)
+        self.abr_actor = Actor(a_dim).type(dtype)
+        self.abr_critic = Critic(a_dim).type(dtype)
+        self.place_actor = PlaceActor(p_dim).type(dtype)
+        self.place_critic = PlaceCritic(p_dim).type(dtype)
 
         # ---- set optimizer for actor and critic
-        self.optimizer = torch.optim.Adam(self.actor.parameters(), self.meta_lr)
-        self.optimizer_critic = torch.optim.Adam(self.critic.parameters(), self.meta_lr)
+        self.abr_optimizer = torch.optim.Adam(self.abr_actor.parameters(), self.meta_lr)
+        self.abr_optimizer_critic = torch.optim.Adam(self.abr_critic.parameters(), self.meta_lr)
+        self.place_optimizer = torch.optim.Adam(self.place_actor.parameters(), self.meta_lr)
+        self.place_optimizer_critic = torch.optim.Adam(self.place_critic.parameters(), self.meta_lr)
 
     def save(self, path="./", epoch=0):
-        torch.save(self.critic.state_dict(), path + "/critic" + str(epoch) + ".pt")
-        torch.save(self.actor.state_dict(), path + "/actor" + str(epoch) + ".pt")
+        torch.save(self.abr_critic.state_dict(), path + "/abr_critic" + str(epoch) + ".pt")
+        torch.save(self.abr_actor.state_dict(), path + "/abr_actor" + str(epoch) + ".pt")
+        torch.save(self.place_critic.state_dict(), path + "/place_critic" + str(epoch) + ".pt")
+        torch.save(self.place_actor.state_dict(), path + "/place_actor" + str(epoch) + ".pt")
 
-    def load(self, path="./"):
-        self.critic.load_state_dict(torch.load(path + "/critic.pt"))
-        self.actor.load_state_dict(torch.load(path + "/actor.pt"))
+    def load(self, abr_epoch = 0, place_epoch = 0, path="./Results/checkpoints"):
+        if abr_epoch>0 :
+            self.abr_critic.load_state_dict(torch.load(path + "/abr_critic"+str(abr_epoch)+".pt"))
+            self.abr_actor.load_state_dict(torch.load(path + "/abr_actor"+str(abr_epoch)+".pt"))
+        if place_epoch>0 :
+            self.place_critic.load_state_dict(torch.load(path + "/place_critic"+str(place_epoch)+".pt"))
+            self.place_actor.load_state_dict(torch.load(path + "/place_actor"+str(place_epoch)+".pt"))
 
     def ent_coeff_decay(self):
         self.ent_coeff = self.ent_decay * self.ent_coeff
@@ -101,64 +116,107 @@ class MAMLPPO:
 
         return advantages, returns
 
-    def collect_steps(self, actor, env, n_episodes):
-        env.env.reset()
+    def collect_steps(self, abr_actor, place_actor, env, n_episodes):
         done = True
+        abr_states = []
+        abr_actions = []
+        abr_rewards = []
+        abr_values = []
+        abr_memory = ReplayMemory(500)
+        place_states = []
+        place_actions = []
+        place_rewards = []
+        place_values = []
+        place_memory = ReplayMemory(500)
+
         explo_bit_rate = 1
-        states = []
-        actions = []
-        rewards = []
-        values = []
-        memory = ReplayMemory(500)
-
+        explo_place_action = 1
+        state = env.reset()
+        state = torch.from_numpy(np.array([state])).type(dtype)
         for _ in range(n_episodes):
+
+            abr_state, place_state = state[:, :self.a_state_dim], state[:, :]
+
+            with torch.no_grad():
+                abr_prob = abr_actor.forward(abr_state)
+                abr_value = self.abr_critic(abr_state)
+                abr_action = abr_prob.multinomial(num_samples=1)
+
+                place_prob = place_actor.forward(place_state)
+                place_value = self.place_critic(place_state)
+                place_action = place_prob.multinomial(num_samples=1)
+
+            # value, action = agent.explore(ob_, state_)
+            explo_bit_rate = int(abr_action.squeeze().cpu().numpy())
+            explo_place_action = int(place_action.squeeze().cpu().numpy())
+
+            if explo_place_action == 0:
+                trans_bit_rate = max(-1, explo_bit_rate - 2)
+            else:
+                trans_bit_rate = explo_bit_rate
+
+            next_state, abr_reward, place_reward, done = env.step(trans_bit_rate, explo_place_action)
+
             # record the current state, observation and action
-            if not done:
-                states.append(state_)
-                actions.append(action)
-                values.append(value)
+            abr_states.append(abr_state)
+            abr_actions.append(abr_action)
+            abr_values.append(abr_value)
+            place_states.append(place_state)
+            place_actions.append(place_action)
+            place_values.append(place_value)
+            abr_rewards.append(abr_reward)
+            place_rewards.append(place_reward)
 
-            bit_rate = explo_bit_rate
-
-            state_, reward_norm, done = env.step(bit_rate)
-            rewards.append(reward_norm)
+            state = next_state
 
             # value, action = actor.explore(ob_, state_, action_mask_)
-            with torch.no_grad():
-                prob = actor.forward(state_)
-                value = self.critic(state_)
-                action = prob.multinomial(num_samples=1)
-            # value, action = agent.explore(ob_, state_)
-            explo_bit_rate = int(action.squeeze().cpu().numpy())
             if done:
-                explo_bit_rate = 1
                 break
 
         # compute returns and GAE(lambda) advantages:
-        if len(states) != len(rewards):
-            if len(states) + 1 == len(rewards):
-                rewards = rewards[1:]
+        if len(abr_states) != len(abr_rewards):
+            if len(abr_states) + 1 == len(abr_rewards):
+                abr_rewards = abr_rewards[1:]
             else:
                 print("error in length of states!")
-        advantages, returns = self.compute_adv(done, value, values, rewards)
-        replay = [states, actions, returns, advantages]
-        memory.push(replay)
+        if len(place_states) != len(place_rewards):
+            if len(place_states) + 1 == len(place_rewards):
+                place_rewards = place_rewards[1:]
+            else:
+                print("error in length of states!")
+        abr_advantages, abr_returns = self.compute_adv(done, abr_value, abr_values, abr_rewards)
+        abr_replay = [abr_states, abr_actions, abr_returns, abr_advantages]
+        abr_memory.push(abr_replay)
+        place_advantages, place_returns = self.compute_adv(done, place_value, place_values, place_rewards)
+        place_replay = [place_states, place_actions, place_returns, place_advantages]
+        place_memory.push(place_replay)
 
         # ----- update critic ----
-        batch_states, _, batch_returns, _ = memory.sample_cuda(memory.return_size())
-        v_pre = self.critic(batch_states)
+        abr_batch_states, _, abr_batch_returns, _ = abr_memory.sample_cuda(abr_memory.return_size())
+        abr_v_pre = self.abr_critic(abr_batch_states)
         # value loss
-        vfloss1 = (v_pre - batch_returns.type(dtype)) ** 2
-        loss_value = 0.5 * torch.mean(vfloss1)
-        loss_critic = loss_value
-        self.optimizer_critic.zero_grad()
+        abr_vfloss1 = (abr_v_pre - abr_batch_returns.type(dtype)) ** 2
+        abr_loss_value = 0.5 * torch.mean(abr_vfloss1)
+        self.abr_optimizer_critic.zero_grad()
         # loss_actor.backward(retain_graph=False)
-        loss_critic.backward()
+        abr_loss_value.backward()
         # clip_grad_norm_(self.critic.parameters(), max_norm = 3., norm_type = 2)
-        self.optimizer_critic.step()
+        self.abr_optimizer_critic.step()
 
-        del memory
-        return replay
+        place_batch_states, _, place_batch_returns, _ = place_memory.sample_cuda(place_memory.return_size())
+        place_v_pre = self.place_critic(place_batch_states)
+        # value loss
+        place_vfloss1 = (place_v_pre - place_batch_returns.type(dtype)) ** 2
+        place_loss_value = 0.5 * torch.mean(place_vfloss1)
+        self.place_optimizer_critic.zero_grad()
+        # loss_actor.backward(retain_graph=False)
+        place_loss_value.backward()
+        # clip_grad_norm_(self.critic.parameters(), max_norm = 3., norm_type = 2)
+        self.place_optimizer_critic.step()
+
+        del abr_memory
+        del place_memory
+        return abr_replay, place_replay
 
     def dual_ppo_loss(self, train_episodes, old_policy, new_policy):
         memory = ReplayMemory(500)
@@ -256,16 +314,16 @@ class MAMLPPO:
         mean_loss_e /= len(iteration_replays)
         return mean_loss_a, mean_loss_e
 
-    def meta_optimize(self, iteration_replays, iteration_policies):
+    def meta_optimize(self, iteration_replays, iteration_policies, actor):
         for _ in range(self.ppo_steps):
             loss_a, loss_e = self.meta_loss(
-                iteration_replays, iteration_policies, self.actor
+                iteration_replays, iteration_policies, actor
             )
 
-            self.optimizer.zero_grad()
+            self.abr_optimizer.zero_grad()
             loss = loss_a + loss_e
             loss.backward()
-            self.optimizer.step()
+            self.abr_optimizer.step()
 
             ## --------- update ---------
             # this part will take higher order gradients through the inner loop:
