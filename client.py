@@ -54,6 +54,7 @@ def get_video_env(env_idx):
         all_cooked_bw=all_cooked_bw,
         all_file_names=all_file_names,
         a2br=True,
+        maml=env_idx==2
     )
     with open(log_file_name + str(env_idx) + "_record", "w") as log_file:
         video_env = env_wrapper.VirtualPlayer(args, core_env, log_file)
@@ -131,8 +132,8 @@ class Client:
         self.bandwidth_list = []
 
     def add_reward(self, abr_reward, place_reward, video_chunk_size, total_reward):
-        if self.maml:
-            total_reward += 1
+        # if self.maml:
+        #     total_reward += 1
         self.abr_reward_list.append(abr_reward)
         self.place_reward_list.append(place_reward)
         self.full_reward_list.append(total_reward)

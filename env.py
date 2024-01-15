@@ -43,6 +43,7 @@ class Environment:
         random_seed=RANDOM_SEED,
         all_file_names=None,
         a2br=False,
+        maml=False
     ):
         assert len(all_cooked_time) == len(all_cooked_bw)
 
@@ -99,6 +100,7 @@ class Environment:
         self.edge_k = 0
         self.client_k = 0
         self.base_sr_delay = 1
+        self.maml = maml
 
     def get_random_gauss_val(self, K_RANGE):
         bottom, top = K_RANGE
@@ -170,7 +172,9 @@ class Environment:
         self.mahimahi_ptr, self.last_mahimahi_time = mahimahi_state
 
     def transmit_chunk(self, quality, sr_place):
-        network_amplify = 2
+        network_amplify = 1.8
+        if self.maml:
+            network_amplify *= 2
         video_chunk_counter_sent = 0
         trans_bitrate = quality
         delay = 0
