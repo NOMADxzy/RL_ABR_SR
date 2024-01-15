@@ -7,7 +7,7 @@ BITS_IN_BYTE = 8.0
 RANDOM_SEED = 42
 VIDEO_CHUNCK_LEN = 4000.0  # millisec, every time add this amount to buffer
 BITRATE_LEVELS = 6
-TOTAL_VIDEO_CHUNCK = 48
+# TOTAL_VIDEO_CHUNCK = 48
 BUFFER_THRESH = 40.0 * MILLISECONDS_IN_SECOND  # millisec, max buffer limit
 DRAIN_BUFFER_SLEEP_TIME = 500.0  # millisec
 PACKET_PAYLOAD_PORTION = 0.95
@@ -217,12 +217,24 @@ class Environment:
                 sr_delay += ((quality + BITRATE_LEVELS) / BITRATE_LEVELS) / self.client_k * self.base_sr_delay
 
         return delay + sr_delay, sr_delay, trans_bitrate, new_bitrate
-    def get_video_chunk(self, quality, sr_place):
+    def get_video_chunk(self, quality, sr_place, no_sr=False, no_abr=False):
+        if no_abr:
+            quality = 0
         # assert quality >= 0
         assert quality < BITRATE_LEVELS
 
         # use the delivery opportunity in mahimahi
-        if quality<0:
+        if no_sr:
+            if quality<0:
+                quality = 0
+            else:
+                quality = min(quality+2, BITRATE_LEVELS-1)
+            delay, sr_delay, trans_bitrate, new_bitrate = self.transmit_chunk(quality, -1)  # in ms
+            place_reward = 0
+        elif sr_place==-1:
+            delay, sr_delay, trans_bitrate, new_bitrate = self.transmit_chunk(quality, -1)  # in ms
+            place_reward = 0
+        elif quality<0:
             delay, sr_delay, trans_bitrate, new_bitrate = self.transmit_chunk(0, -1)  # in ms
             place_reward = 0
         else:
@@ -302,6 +314,7 @@ class Environment:
         return_buffer_size = self.buffer_size
 
         self.video_chunk_counter += 1
+        TOTAL_VIDEO_CHUNCK = len(self.video_size[0]) - 1
         video_chunk_remain = TOTAL_VIDEO_CHUNCK - self.video_chunk_counter
 
         end_of_video = False

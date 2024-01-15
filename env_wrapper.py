@@ -13,12 +13,9 @@ VIDEO_BIT_RATE = [300, 750, 1200, 1850, 2850, 4300]  # Kbps
 S_INFO = 8
 S_LEN = 8
 A_DIM = 6
-CHUNK_TIL_VIDEO_END_CAP = 48.0
-M_IN_K = 1000.0
 REBUF_PENALTY_LOG = 2.66  # 1 sec rebuffering -> 3 Mbps
 REBUF_PENALTY_LIN = 4.3
 SMOOTH_PENALTY = 1
-DEFAULT_QUALITY = 1  # default video quality without agent
 
 USE_CUDA = torch.cuda.is_available()
 dtype = torch.cuda.FloatTensor if torch.cuda.is_available() else torch.FloatTensor
@@ -36,10 +33,9 @@ class VirtualPlayer:
         #     quality_penalty, rebuffer_penalty, smooth_penalty_p, smooth_penalty_n \
         #         = env.get_env_info()
         # Video information
-        self.s_info, self.s_len, self.total_chunk_num, self.quality_p, self.smooth_p = (
+        self.s_info, self.s_len, self.quality_p, self.smooth_p = (
             S_INFO,
             S_LEN,
-            CHUNK_TIL_VIDEO_END_CAP,
             1,
             SMOOTH_PENALTY,
         )
@@ -58,8 +54,6 @@ class VirtualPlayer:
         self.last_bit_rate = DEFAULT_QUALITY
         self.time_stamp = 0.0
         self.end_flag = True
-        self.video_chunk_remain = self.total_chunk_num
-
         # log files, recoding the video playing
         self.log_file = log_file
 
@@ -67,6 +61,8 @@ class VirtualPlayer:
         self.past_errors = []
         self.past_bandwidth_ests = []
         self.video_chunk_sizes = env.get_video_size()
+        self.total_chunk_num = len(self.video_chunk_sizes[0]) - 1
+        self.video_chunk_remain = self.total_chunk_num
 
     def step(self, trans_bitrate, sr_place):
         # execute a step forward
