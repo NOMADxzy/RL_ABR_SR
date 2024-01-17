@@ -133,8 +133,6 @@ class Client:
         self.bandwidth_list = []
 
     def add_reward(self, abr_reward, place_reward, video_chunk_size, total_reward):
-        # if self.maml:
-        #     total_reward += 1
         self.abr_reward_list.append(abr_reward)
         self.place_reward_list.append(place_reward)
         self.full_reward_list.append(total_reward)
@@ -227,7 +225,7 @@ class Client:
             rebuffer_time = np.maximum(terminal_delay - self.buffer_time, 0.0)
             self.buffer_time = np.maximum(self.buffer_time - terminal_delay, 0.0)
             self.buffer_time += VIDEO_CHUNCK_LEN
-            total_reward = END_BIT_RATE[end_bitrate] / 1000 - self.env.rebuff_p * rebuffer_time + self.env.smooth_p * np.abs(end_bitrate - self.last_bitrate)
+            total_reward = END_BIT_RATE[end_bitrate] / 1000 - self.env.rebuff_p * rebuffer_time - self.env.smooth_p * np.abs(end_bitrate - self.last_bitrate)
             self.last_bitrate = end_bitrate
 
             self.add_reward(reward, place_reward, video_chunk_size+plus_throuput, total_reward)
