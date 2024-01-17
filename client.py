@@ -110,6 +110,7 @@ class Client:
 
         self.t1 = []
         self.t2 = []
+        self.last_bitrate = 0
 
         # 画图
         self.plt_interval = 1
@@ -226,7 +227,8 @@ class Client:
             rebuffer_time = np.maximum(terminal_delay - self.buffer_time, 0.0)
             self.buffer_time = np.maximum(self.buffer_time - terminal_delay, 0.0)
             self.buffer_time += VIDEO_CHUNCK_LEN
-            total_reward = END_BIT_RATE[end_bitrate] / 1000 - self.env.rebuff_p * rebuffer_time + 2
+            total_reward = END_BIT_RATE[end_bitrate] / 1000 - self.env.rebuff_p * rebuffer_time + self.env.smooth_p * np.abs(end_bitrate - self.last_bitrate)
+            self.last_bitrate = end_bitrate
 
             self.add_reward(reward, place_reward, video_chunk_size+plus_throuput, total_reward)
 
@@ -352,7 +354,7 @@ if __name__ == "__main__":
         start = 70
         delta = 20
         # net_idxs = [73,76,77,78]
-        net_idxs = [72, 78, 82, 89]
+        net_idxs = [73, 78, 82, 89]
         for i in net_idxs:
             for client in clients:
                 client.run(10000, trace_idx=i)

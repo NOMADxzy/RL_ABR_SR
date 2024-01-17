@@ -15,7 +15,7 @@ S_LEN = 8
 A_DIM = 6
 REBUF_PENALTY_LOG = 2.66  # 1 sec rebuffering -> 3 Mbps
 REBUF_PENALTY_LIN = 4.3
-SMOOTH_PENALTY = 1
+SMOOTH_PENALTY = 0.5
 
 USE_CUDA = torch.cuda.is_available()
 dtype = torch.cuda.FloatTensor if torch.cuda.is_available() else torch.FloatTensor
