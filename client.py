@@ -352,7 +352,8 @@ if __name__ == "__main__":
         start = 70
         delta = 20
         # net_idxs = [73,76,77,78]
-        net_idxs = [73, 78, 82, 89]
+        net_idxs = [82, 93]
+        # net_idxs = [90, 91, 92, 93, 94]
         for i in net_idxs:
             for client in clients:
                 client.run(10000, trace_idx=i)
