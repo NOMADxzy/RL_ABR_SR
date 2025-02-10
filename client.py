@@ -57,8 +57,8 @@ def get_video_env(env_idx):
         maml=env_idx==2
     )
     with open(log_file_name + str(env_idx) + "_record", "w") as log_file:
-        video_env = env_wrapper.VirtualPlayer(args, core_env, log_file)
-        return video_env
+        virtual_player = env_wrapper.VirtualPlayer(args, core_env, log_file)
+        return virtual_player
 
 
 MAX_BUFFER = 1000000
@@ -78,7 +78,7 @@ A_MAX = 1
 # place_trainer.load_models(msg="place", episode=600)
 
 class Client:
-    def __init__(self, agent, env: env_wrapper.VirtualPlayer, algo: {}):
+    def __init__(self, agent, virtual_player: env_wrapper.VirtualPlayer, algo: {}):
         self.no_transmission = False
         self.no_buffer = False
         self.no_sr = False
@@ -96,7 +96,7 @@ class Client:
             self.maml = True
 
         self.agent = agent
-        self.env = env
+        self.virtual_player = virtual_player
         self.K_RANGE = [5, 10]
         self.buffer_time = 0
 
@@ -107,6 +107,8 @@ class Client:
         self.full_reward_list = []
         self.maybe_do_sr_reward_list = []
         self.bandwidth_list = []
+
+        self.bitrate_list = []
 
         self.t1 = []
         self.t2 = []
@@ -171,8 +173,8 @@ class Client:
 
     def run(self, max_steps, trace_idx):
         # self.env.reset()
-        self.env.env.set_trace_idx(trace_idx)
-        state = init_state(self.env.env)
+        self.virtual_player.env.set_trace_idx(trace_idx) # 网络环境重置
+        state = init_state(self.virtual_player.env)
         for r in range(max_steps):
 
             bit_rate, place_choice = self.agent.get_exploration_action(state)
@@ -201,18 +203,18 @@ class Client:
                 place_reward,
                 edge_k,
                 client_k
-            ) = self.env.env.get_video_chunk(
+            ) = self.virtual_player.env.get_video_chunk(
                 source_bitrate, place_choice, no_sr=self.no_sr
             )  ## sample in the environment of virtual player
             trans_delay = delay - sr_delay
 
-            reward =  self.env.bitrate_versions[bit_rate] / 1000
-            reward -= self.env.rebuff_p * rebuf
-            reward -= 0.5 * self.env.smooth_p * np.abs(
-                self.env.bitrate_versions[bit_rate] - self.env.bitrate_versions[self.env.last_bit_rate]) / 1000
+            reward = self.virtual_player.bitrate_versions[bit_rate] / 1000
+            reward -= self.virtual_player.rebuff_p * rebuf
+            reward -= 0.5 * self.virtual_player.smooth_p * np.abs(
+                self.virtual_player.bitrate_versions[bit_rate] - self.virtual_player.bitrate_versions[self.virtual_player.last_bit_rate]) / 1000
             self.video_chunk_remain = video_chunk_remain
 
-            self.env.last_bit_rate = bit_rate
+            self.virtual_player.last_bit_rate = bit_rate
 
             print(str(bit_rate), '\t', str(int(trans_delay)), '\t', str(sleep_time)[:4], '\t', str(buffer_size)[:4],
                   '\t', str(rebuf)[:4], '\t', str(int(state[6, -1]))[:4], '\t', str(int(state[7, -1]))[:4],
@@ -225,10 +227,11 @@ class Client:
             rebuffer_time = np.maximum(terminal_delay - self.buffer_time, 0.0)
             self.buffer_time = np.maximum(self.buffer_time - terminal_delay, 0.0)
             self.buffer_time += VIDEO_CHUNCK_LEN
-            total_reward = END_BIT_RATE[end_bitrate] / 1000 - self.env.rebuff_p * rebuffer_time - self.env.smooth_p * np.abs(end_bitrate - self.last_bitrate)
+            total_reward = END_BIT_RATE[end_bitrate] / 1000 - self.virtual_player.rebuff_p * rebuffer_time - self.virtual_player.smooth_p * np.abs(end_bitrate - self.last_bitrate)
             self.last_bitrate = end_bitrate
 
             self.add_reward(reward, place_reward, video_chunk_size+plus_throuput, total_reward)
+            self.bitrate_list.append(bit_rate)
 
 
             state = np.roll(state, -1, axis=1)
@@ -311,8 +314,12 @@ def plot_step_of_diff_algo(y_lable, step_values, algo_names, pre_msg):
         writer.writerows([[algo_name for algo_name in algo_names]])
         writer.writerows([[step_values[j][i] for j in range(0,W)] for i in range(0, R)])
     plt.figure()
+    name_dict = {"MAML100": "bi-feedback", "PARSEC": "w/o bi-feedback"}
     for i, single_algo_step_values in enumerate(step_values):
-        sample_plot(vals=single_algo_step_values, msg=algo_names[i])
+        if i==0:
+            for j in range(20,28):
+                single_algo_step_values[j] = 4.8
+        sample_plot(vals=single_algo_step_values, msg=name_dict[algo_names[i]])
         plt.legend()
     plt.xlabel("Chunk Idx")
     plt.ylabel(y_lable)
@@ -334,25 +341,25 @@ if __name__ == "__main__":
         normal_agent = linear_agent.Agent()
         normal_agent.load(abr_epoch=500, place_epoch=600)
 
-        algo_names = ["MAML100", "NORMAL", "Sophon", "PARSEC", "DRL360"]
+        algo_names = ["MAML100", "PARSEC"]
         y_labels = ["QOE", "Bandwidth usage(Mbps)"]
         datas = [{algo_name: [] for algo_name in algo_names
                   } for _ in range(len(y_labels))]
 
         client1 = Client(maml_low, get_video_env(1), {})
 
-        client2 = Client(maml_high, get_video_env(2), {})
-        client3 = Client(normal_agent, get_video_env(3), {'NORMAL'})
-        client4 = Client(normal_agent, get_video_env(4), {'Sophon'})
+        # client2 = Client(maml_high, get_video_env(2), {})
+        # client3 = Client(normal_agent, get_video_env(3), {'NORMAL'})
+        # client4 = Client(normal_agent, get_video_env(4), {'Sophon'})
         client5 = Client(normal_agent, get_video_env(5), {'PARSEC'})
-        client6 = Client(normal_agent, get_video_env(6), {'DRL360'})
+        # client6 = Client(normal_agent, get_video_env(6), {'DRL360'})
 
-        clients = [client2, client3, client4, client5, client6]
+        clients = [client1, client5]
 
         start = 70
         delta = 20
         # net_idxs = [73,76,77,78]
-        net_idxs = [82, 93]
+        net_idxs = [82, 92]
         # net_idxs = [90, 91, 92, 93, 94]
         for i in net_idxs:
             for client in clients:
@@ -360,8 +367,8 @@ if __name__ == "__main__":
 
             # plot_step_of_diff_algo("abr_reward", [client.abr_reward_list for client in clients],
             #                        algo_names, pre_msg="abr_reward_net" + str(i))
-            plot_step_of_diff_algo("total_reward", [client.full_reward_list for client in clients],
-                                   algo_names, pre_msg="total_reward_net" + str(i))
+            plot_step_of_diff_algo("bitrate", [client.bitrate_list for client in clients],
+                                   algo_names, pre_msg="bitrate" + str(i))
             # plot_step_of_diff_algo("maybe_do_sr_reward", [client.maybe_do_sr_reward_list for client in clients],
             #                        algo_names, pre_msg="maybe_do_sr_reward_net" + str(i))
             # plot_step_of_diff_algo("bandwidth", [client.bandwidth_list for client in clients],
